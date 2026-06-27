@@ -10,7 +10,7 @@
   <meta name="description" content="Лунный календарь для финансовых операций">
   <title>🌙 Лунные Финансы</title>
   <link rel="manifest" href="manifest.json">
-  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
   <style>
     :root {
       --bg-deep:    #06060f;
@@ -518,42 +518,87 @@ const WEEKDAYS_RU = ['воскресенье','понедельник','втор
 const MONTHS_RU   = ['января','февраля','марта','апреля','мая','июня','июля','августа','сентября','октября','ноября','декабря'];
 const MONTHS_SHORT = ['янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек'];
 
-// ═══ Astronomical moon day calculation ═══
-// Reference new moon: 2026-06-16 at ~00:00 UTC (approx)
-// Using well-known reference: new moon 2000-01-06 18:14 UTC
-function getMoonData(date) {
-  const REF_NEW_MOON = new Date('2000-01-06T18:14:00Z');
-  const SYNODIC = 29.53058867; // days
-  const msPerDay = 86400000;
+// ═══ Fetch data from life-moon.pp.ru via CORS proxy ═══
+const CITY_SLUG = 'verkhnyaya-salda';
+const PROXY = 'https://api.allorigins.win/get?url=';
 
-  const daysSinceRef = (date - REF_NEW_MOON) / msPerDay;
-  const cyclePos = ((daysSinceRef % SYNODIC) + SYNODIC) % SYNODIC;
+const PHASE_EMOJI = {
+  '1': '🌒', '2': '🌔', '3': '🌖', '4': '🌘',
+  'новолуние': '🌑', 'полнолуние': '🌕', 'первая четверть': '🌓', 'третья четверть': '🌗'
+};
 
-  const moonDay = Math.floor(cyclePos) + 1; // 1-indexed
+const SIGN_MAP = {
+  'овна': '♈ Овен', 'тельца': '♉ Телец', 'близнецов': '♊ Близнецы',
+  'рака': '♋ Рак', 'льва': '♌ Лев', 'девы': '♍ Дева',
+  'весов': '♎ Весы', 'скорпиона': '♏ Скорпион', 'стрельца': '♐ Стрелец',
+  'козерога': '♑ Козерог', 'водолея': '♒ Водолей', 'рыб': '♓ Рыбы'
+};
 
-  let phase, phaseEmoji;
-  if (cyclePos < 1)       { phase = 'Новолуние';       phaseEmoji = '🌑'; }
-  else if (cyclePos < 7.38) { phase = '1-я фаза (растущая)'; phaseEmoji = '🌒'; }
-  else if (cyclePos < 7.88) { phase = '1-я четверть';   phaseEmoji = '🌓'; }
-  else if (cyclePos < 14.76) { phase = '2-я фаза (растущая)'; phaseEmoji = '🌔'; }
-  else if (cyclePos < 15.76) { phase = 'Полнолуние';    phaseEmoji = '🌕'; }
-  else if (cyclePos < 22.15) { phase = '3-я фаза (убывающая)'; phaseEmoji = '🌖'; }
-  else if (cyclePos < 22.65) { phase = '3-я четверть';  phaseEmoji = '🌗'; }
-  else                       { phase = '4-я фаза (убывающая)'; phaseEmoji = '🌘'; }
-
-  return { moonDay, phase, phaseEmoji };
+function dateToSlug(d) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
 }
 
-// ═══ Zodiac sign approximation for moon ═══
-const ZODIAC_SIGNS = ['♈Овен','♉Телец','♊Близнецы','♋Рак','♌Лев','♍Дева','♎Весы','♏Скорпион','♐Стрелец','♑Козерог','♒Водолей','♓Рыбы'];
-function getMoonSign(date) {
-  // Moon moves ~13.2° per day, full zodiac = 360° / 12 = 30° per sign
-  // Rough reference: moon in Aries at new moon 2000-01-06
-  const REF = new Date('2000-01-06T18:14:00Z');
-  const days = (date - REF) / 86400000;
-  const moonLon = (days * 13.176396) % 360;
-  const signIdx = Math.floor(((moonLon % 360) + 360) % 360 / 30);
-  return ZODIAC_SIGNS[signIdx];
+async function fetchMoonDay(date) {
+  const slug = dateToSlug(date);
+  const url = `https://www.life-moon.pp.ru/moon-day-info/${slug}/1/`;
+  try {
+    const res = await fetch(PROXY + encodeURIComponent(url));
+    const json = await res.json();
+    const html = json.contents;
+    return parseMoonHtml(html, date);
+  } catch(e) {
+    return null;
+  }
+}
+
+function parseMoonHtml(html, date) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, 'text/html');
+
+  // Extract moon day number
+  let moonDay = null;
+  const links = doc.querySelectorAll('a[href*="/moon-days/"]');
+  for (const a of links) {
+    const m = a.href.match(/moon-days\/(\d+)\//);
+    if (m) { moonDay = parseInt(m[1]); break; }
+  }
+
+  // Extract zodiac sign from text
+  let sign = '—';
+  const text = doc.body ? doc.body.innerText || doc.body.textContent : '';
+  const signMatch = text.match(/луна в знаке\s+([^\n\r,]+)/i);
+  if (signMatch) {
+    const raw = signMatch[1].trim().toLowerCase().split(' ')[0];
+    sign = SIGN_MAP[raw] || signMatch[1].trim().split(' ')[0];
+  }
+
+  // Extract phase
+  let phase = '—', phaseEmoji = '🌙';
+  const phaseMatch = text.match(/(\d+)\s*фаза/i);
+  if (phaseMatch) {
+    phase = phaseMatch[1] + '-я фаза';
+    phaseEmoji = PHASE_EMOJI[phaseMatch[1]] || '🌙';
+  } else if (/новолуние/i.test(text)) {
+    phase = 'Новолуние'; phaseEmoji = '🌑';
+  } else if (/полнолуние/i.test(text)) {
+    phase = 'Полнолуние'; phaseEmoji = '🌕';
+  }
+
+  return { moonDay, sign, phase, phaseEmoji };
+}
+
+// Cache for fetched data
+const moonCache = {};
+
+async function getMoonData(date) {
+  const key = dateToSlug(date);
+  if (moonCache[key]) return moonCache[key];
+  const data = await fetchMoonDay(date);
+  if (data) moonCache[key] = data;
+  return data;
 }
 
 // ═══ Render helpers ═══
@@ -562,17 +607,28 @@ function ratingHTML(moonDay) {
   return info;
 }
 
-function updateTodayCard() {
+async function updateTodayCard() {
   const now = new Date();
-  const { moonDay, phase, phaseEmoji } = getMoonData(now);
-  const sign = getMoonSign(now);
-  const info = ratingHTML(moonDay);
-
   document.getElementById('todayDateStr').textContent =
     now.getDate() + ' ' + MONTHS_RU[now.getMonth()];
   document.getElementById('todayWeekday').textContent = WEEKDAYS_RU[now.getDay()];
+  document.getElementById('todayMoonDay').textContent = '…';
+  document.getElementById('todayPhase').textContent = '…';
+  document.getElementById('todaySign').textContent = '…';
+
+  const data = await getMoonData(now);
+  if (!data) {
+    document.getElementById('todayMoonDay').textContent = '—';
+    document.getElementById('todayPhase').textContent = 'Нет связи';
+    document.getElementById('todaySign').textContent = '—';
+    return;
+  }
+
+  const { moonDay, sign, phase, phaseEmoji } = data;
+  const info = ratingHTML(moonDay);
+
   document.getElementById('todayMoonDay').textContent = moonDay;
-  document.getElementById('todayPhase').textContent = phase.split(' ')[0] + '-я фаза';
+  document.getElementById('todayPhase').textContent = phase;
   document.getElementById('todaySign').textContent = sign;
   document.getElementById('moonIcon').textContent = phaseEmoji;
 
@@ -583,43 +639,63 @@ function updateTodayCard() {
   document.getElementById('ratingDesc').textContent = info.desc;
 }
 
-function buildCalendarStrip() {
+async function buildCalendarStrip() {
   const strip = document.getElementById('calendarStrip');
   strip.innerHTML = '';
   const today = new Date();
   today.setHours(12,0,0,0);
 
+  // Build DOM immediately with loading dots, fetch in background
+  const days = [];
   for (let i = -1; i <= 13; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
-    const { moonDay } = getMoonData(d);
-    const info = MOON_FINANCE[moonDay] || MOON_FINANCE[1];
-
     const div = document.createElement('div');
     div.className = 'cal-day' + (i === 0 ? ' today-mark' : '');
+    div.dataset.offset = i;
     div.innerHTML = `
       <div class="cal-wd">${['вс','пн','вт','ср','чт','пт','сб'][d.getDay()]}</div>
       <div class="cal-d">${d.getDate()}</div>
-      <div class="cal-dot ${DOT_CLASS[info.r]}"></div>
+      <div class="cal-dot dot-neutral" id="dot-${i+1}"></div>
     `;
     strip.appendChild(div);
+    days.push({ d, i, div });
+  }
+
+  // Fetch all days (staggered to avoid hammering)
+  for (const { d, i } of days) {
+    getMoonData(d).then(data => {
+      if (!data) return;
+      const dot = document.getElementById(`dot-${i+1}`);
+      if (dot) {
+        const info = MOON_FINANCE[data.moonDay] || MOON_FINANCE[1];
+        dot.className = 'cal-dot ' + DOT_CLASS[info.r];
+      }
+    });
   }
 }
 
-function buildUpcoming() {
+async function buildUpcoming() {
   const list = document.getElementById('upcomingList');
-  list.innerHTML = '';
+  list.innerHTML = '<div class="loading"><span>🌙</span>Загружаем данные…</div>';
   const today = new Date();
   today.setHours(12,0,0,0);
-  let count = 0;
 
-  for (let i = 1; i <= 30 && count < 5; i++) {
+  const results = [];
+  for (let i = 1; i <= 30; i++) {
     const d = new Date(today);
     d.setDate(today.getDate() + i);
-    const { moonDay } = getMoonData(d);
-    const info = MOON_FINANCE[moonDay] || MOON_FINANCE[1];
-    if (info.r !== 'excellent' && info.r !== 'good') continue;
+    const data = await getMoonData(d);
+    if (!data) continue;
+    const info = MOON_FINANCE[data.moonDay] || MOON_FINANCE[1];
+    if (info.r === 'excellent' || info.r === 'good') {
+      results.push({ d, moonDay: data.moonDay, info });
+    }
+    if (results.length >= 5) break;
+  }
 
+  list.innerHTML = '';
+  for (const { d, moonDay, info } of results) {
     const div = document.createElement('div');
     div.className = 'up-item';
     div.innerHTML = `
@@ -635,7 +711,6 @@ function buildUpcoming() {
       <div class="up-badge ${UB_CLASS[info.r] || 'ub-good'}">${info.label}</div>
     `;
     list.appendChild(div);
-    count++;
   }
 }
 
